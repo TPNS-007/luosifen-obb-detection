@@ -5,7 +5,7 @@ import torch.nn.functional as F
 
 
 class PECA_Attention(nn.Module):
-    """Progressive Efficient Channel Attention (创新点3)"""
+    """Progressive Efficient Channel Attention (PECA) (Contribution 3)"""
     def __init__(self, channels, reduction=4):
         super().__init__()
         hidden = max(1, channels // reduction)
@@ -27,19 +27,19 @@ class PECA_Attention(nn.Module):
         B, C, H, W = x.shape
         y = F.adaptive_avg_pool2d(x, 1)               # (B, C, 1, 1)
         y = y.squeeze(-1).transpose(-1, -2)            # (B, 1, C)
-        y1 = self.silu(self.conv1(y))                  # 大感受野
-        y2 = self.conv2(y1)                            # 精细调节
+        y1 = self.silu(self.conv1(y))                  # Large Receptive Field
+        y2 = self.conv2(y1)                            # Fine-grained Adjustment
         y = self.sigmoid(y2)                            # (B, 1, C)
         y = y.transpose(-1, -2).unsqueeze(-1)          # (B, C, 1, 1)
-        return x * y                                   # 逐通道调制
+        return x * y                                   # Channel-wise Modulation
 
 
 class AngleAwareEnhance(nn.Module):
-    """双路角度感知增强 (创新点2)"""
+    """Dual-Path Angle-Aware Enhancement (AAE) (Contribution 2)"""
     def __init__(self, c2, hidden=None):
         super().__init__()
         hidden = hidden or max(c2 // 8, 8)
-        # 全局通道描述
+        # Global Channel Descriptor
         self.global_pool = nn.AdaptiveAvgPool2d(1)
         self.fc = nn.Sequential(
             nn.Conv2d(c2, hidden, 1, bias=False),
@@ -48,57 +48,57 @@ class AngleAwareEnhance(nn.Module):
             nn.Conv2d(hidden, c2, 1, bias=False),
             nn.BatchNorm2d(c2),
         )
-        # 局部空间矫正
+        # Local Spatial Rectification
         self.spatial_conv = nn.Conv2d(c2, c2, 3, padding=1, groups=c2, bias=False)
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
-        # 全局路径
+        # Global Path
         glob = self.global_pool(x)          # (B, C, 1, 1)
         glob = self.fc(glob)                # (B, C, 1, 1)
-        # 空间路径
+        # Spatial Path
         spat = self.spatial_conv(x)         # (B, C, H, W)
-        spat = self.global_pool(spat)       # 空间信息压缩到通道
-        # 融合
-        w = self.sigmoid(glob + spat)       # (0,1) 注意力
-        return (1.0 + w)                    # 映射到 (1,2) 增强系数
+        spat = self.global_pool(spat)       # Spatial information compressed into the channel dimension
+        # Fusion
+        w = self.sigmoid(glob + spat)       # Attention weights in (0, 1)
+        return (1.0 + w)                    # Enhancement factor mapped to (1, 2)
 
 
 class GhostConv_OBB(nn.Module):
-    """改进版 GhostConv for OBB (创新点1+2+3)"""
+    """Improved GhostConv for OBB (Integrating Contributions 1–3)"""
     def __init__(self, c1, c2, k=1, s=1, g=1, e=0.5):
         super().__init__()
         self.c_ = int(c2 * e)
         self.g = g if c1 % g == 0 else 1
 
-        # 主卷积分支
+        # Primary Convolution Branch
         self.primary_conv = nn.Sequential(
             nn.Conv2d(c1, self.c_, k, s, k // 2, groups=self.g, bias=False),
             nn.BatchNorm2d(self.c_),
             nn.SiLU(inplace=True),
         )
 
-        # 廉价操作分支
+        # Cheap Operation Branch
         self.cheap_conv = nn.Sequential(
             nn.Conv2d(self.c_, c2 - self.c_, 1, 1, 0, groups=1, bias=False),
             nn.BatchNorm2d(c2 - self.c_),
             nn.SiLU(inplace=True),
         )
 
-        # 角度感知增强 (替代原 angle_enhance)
+        # Angle-Aware Enhancement (AAE) (replaces the original angle_enhance) 
         self.angle_enhance = AngleAwareEnhance(c2)
 
-        # 渐进式通道注意力
+        # Progressive Channel Attention (PCA)
         self.channel_att = PECA_Attention(c2)
 
-        # 残差连接（若输入输出通道或尺寸不匹配，用 1x1 投影）
+        # Residual connection (employing a 1×1 projection when input and output channels or dimensions mismatch)
         self.use_residual = (s == 1 and c1 == c2)
         if c1 != c2 or s != 1:
             self.residual_proj = nn.Conv2d(c1, c2, 1, s, 0, bias=False)
         else:
             self.residual_proj = nn.Identity()
 
-        # 可学习的残差融合系数
+        # Learnable Residual Fusion Coefficients
         self.residual_scale = nn.Parameter(torch.tensor(0.1))
         self._init_weights()
 
@@ -116,21 +116,21 @@ class GhostConv_OBB(nn.Module):
         identity = self.residual_proj(x)
         x1 = self.primary_conv(x)
         x2 = self.cheap_conv(x1)
-        out = torch.cat([x1, x2], dim=1)          # 通道拼接
+        out = torch.cat([x1, x2], dim=1)          # Channel Concatenation
 
-        # 角度增强
-        att = self.angle_enhance(out)             # (1, 2) 范围
+        # Angle Enhancement
+        att = self.angle_enhance(out)             # (1, 2) Range
         out = out * att
 
-        # 通道注意力
+        # Channel Attention
         out = self.channel_att(out)
 
-        # 数值安全检查
+        # Numerical Sanity Check
         if not torch.isfinite(out).all():
             print("Warning: GhostConv_OBB has NaN/Inf, falling back to enhanced concat")
-            return out * 0.0 + identity * 1.0   # 安全返回投影残差
+            return out * 0.0 + identity * 1.0   # Safe Fallback to Projected Residual
 
-        # 自适应残差融合 (创新点1)
+        # Adaptive Residual Fusion (Contribution 1)
         if self.use_residual:
             out = identity * (1.0 - self.residual_scale) + out * self.residual_scale
         return out
