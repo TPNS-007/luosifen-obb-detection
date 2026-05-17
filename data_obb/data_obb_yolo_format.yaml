@@ -1,0 +1,24 @@
+# YOLO OBB Dataset
+# Converted from COCO format
+
+# Training set
+train: ..\data_obb\yolo_obb_train/images
+train_labels: ..\data_obb\yolo_obb_train/labels
+
+# Validation set
+val: ..\data_obb\yolo_obb_val/images
+val_labels: ..\data_obb\yolo_obb_val/labels
+
+# Test set
+test: ..\data_obb\yolo_obb_test/images
+test_labels: ..\data_obb\yolo_obb_test/labels
+
+# Number of classes
+nc: 4
+
+# Class names
+names:
+  0: lsf_0
+  1: lsf_1
+  2: lsf_2
+  3: lsf_3
